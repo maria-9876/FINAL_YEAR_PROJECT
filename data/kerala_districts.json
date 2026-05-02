@@ -1,0 +1,139 @@
+{
+  "districts": [
+    {
+      "name": "Thiruvananthapuram",
+      "population": 3301329,
+      "hospital_capacity": 4500,
+      "icu_capacity": 450,
+      "economic_weight": 0.85,
+      "compliance_rate": 0.82,
+      "neighbors": ["Kollam"]
+    },
+    {
+      "name": "Kollam",
+      "population": 2635375,
+      "hospital_capacity": 3200,
+      "icu_capacity": 300,
+      "economic_weight": 0.70,
+      "compliance_rate": 0.78,
+      "neighbors": ["Thiruvananthapuram", "Pathanamthitta", "Alappuzha"]
+    },
+    {
+      "name": "Pathanamthitta",
+      "population": 1197412,
+      "hospital_capacity": 1800,
+      "icu_capacity": 150,
+      "economic_weight": 0.65,
+      "compliance_rate": 0.85,
+      "neighbors": ["Kollam", "Alappuzha", "Kottayam", "Idukki"]
+    },
+    {
+      "name": "Alappuzha",
+      "population": 2127789,
+      "hospital_capacity": 2800,
+      "icu_capacity": 250,
+      "economic_weight": 0.75,
+      "compliance_rate": 0.80,
+      "neighbors": ["Kollam", "Pathanamthitta", "Kottayam", "Ernakulam"]
+    },
+    {
+      "name": "Kottayam",
+      "population": 1974551,
+      "hospital_capacity": 2900,
+      "icu_capacity": 280,
+      "economic_weight": 0.78,
+      "compliance_rate": 0.83,
+      "neighbors": ["Pathanamthitta", "Alappuzha", "Ernakulam", "Idukki"]
+    },
+    {
+      "name": "Idukki",
+      "population": 1108974,
+      "hospital_capacity": 1200,
+      "icu_capacity": 100,
+      "economic_weight": 0.60,
+      "compliance_rate": 0.75,
+      "neighbors": ["Pathanamthitta", "Kottayam", "Ernakulam", "Thrissur"]
+    },
+    {
+      "name": "Ernakulam",
+      "population": 3282388,
+      "hospital_capacity": 5500,
+      "icu_capacity": 600,
+      "economic_weight": 0.95,
+      "compliance_rate": 0.86,
+      "neighbors": ["Alappuzha", "Kottayam", "Idukki", "Thrissur"]
+    },
+    {
+      "name": "Thrissur",
+      "population": 3121200,
+      "hospital_capacity": 4200,
+      "icu_capacity": 400,
+      "economic_weight": 0.82,
+      "compliance_rate": 0.81,
+      "neighbors": ["Ernakulam", "Idukki", "Palakkad", "Malappuram"]
+    },
+    {
+      "name": "Palakkad",
+      "population": 2809934,
+      "hospital_capacity": 2900,
+      "icu_capacity": 220,
+      "economic_weight": 0.68,
+      "compliance_rate": 0.76,
+      "neighbors": ["Thrissur", "Malappuram"]
+    },
+    {
+      "name": "Malappuram",
+      "population": 4112920,
+      "hospital_capacity": 3800,
+      "icu_capacity": 350,
+      "economic_weight": 0.72,
+      "compliance_rate": 0.74,
+      "neighbors": ["Thrissur", "Palakkad", "Kozhikode", "Wayanad"]
+    },
+    {
+      "name": "Kozhikode",
+      "population": 3086293,
+      "hospital_capacity": 4500,
+      "icu_capacity": 450,
+      "economic_weight": 0.85,
+      "compliance_rate": 0.82,
+      "neighbors": ["Malappuram", "Wayanad", "Kannur"]
+    },
+    {
+      "name": "Wayanad",
+      "population": 817420,
+      "hospital_capacity": 1100,
+      "icu_capacity": 90,
+      "economic_weight": 0.58,
+      "compliance_rate": 0.79,
+      "neighbors": ["Malappuram", "Kozhikode", "Kannur"]
+    },
+    {
+      "name": "Kannur",
+      "population": 2523003,
+      "hospital_capacity": 3300,
+      "icu_capacity": 300,
+      "economic_weight": 0.74,
+      "compliance_rate": 0.80,
+      "neighbors": ["Kozhikode", "Wayanad", "Kasaragod"]
+    },
+    {
+      "name": "Kasaragod",
+      "population": 1307375,
+      "hospital_capacity": 1600,
+      "icu_capacity": 140,
+      "economic_weight": 0.62,
+      "compliance_rate": 0.77,
+      "neighbors": ["Kannur"]
+    }
+  ],
+  "global_parameters": {
+    "travel_probability_base": 0.05,
+    "lockdown_effects": {
+      "level_0": {"transmission_modifier": 1.0, "economic_impact": 0.0},
+      "level_1": {"transmission_modifier": 0.8, "economic_impact": 0.1},
+      "level_2": {"transmission_modifier": 0.5, "economic_impact": 0.4},
+      "level_3": {"transmission_modifier": 0.2, "economic_impact": 0.8}
+    }
+  }
+}
