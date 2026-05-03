@@ -8,7 +8,7 @@ class MARLController:
     Implements the Multi-Agent Recurrent Attention Actor-Critic (MARAAC) from the paper.
     Uses Parameter Sharing, GRU Actors, and an Attention Critic.
     """
-    def __init__(self, agent_names, state_dim, action_dim, lr=3e-4, gamma=0.99, alpha=0.01):
+    def __init__(self, agent_names, state_dim, action_dim, lr=3e-3, gamma=0.99, alpha=0.001):
         self.agent_names = agent_names
         self.gamma = gamma
         self.alpha = alpha # Temperature parameter for entropy
