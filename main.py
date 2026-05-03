@@ -45,7 +45,7 @@ def train(num_episodes=10, max_steps=100):
             next_obs, rewards, terminations, truncations, infos = env.step(actions)
             
             # 3. Store transitions
-            for agent in env.agents:
+            for agent in env.possible_agents:
                 ep_states[agent].append(observations[agent])
                 ep_actions[agent].append(actions[agent])
                 ep_rewards[agent].append(rewards[agent])
@@ -59,7 +59,7 @@ def train(num_episodes=10, max_steps=100):
                 break
                 
         # End of episode policy update
-        for agent in env.agents:
+        for agent in env.possible_agents:
             # Perform PPO updates over the stored trajectory memory
             controller.update(
                 agent=agent,
@@ -95,7 +95,7 @@ def evaluate(controller, max_steps=100):
     
     for step in range(max_steps):
         # Deterministic actions (no sampling noise)
-        actions, _, _ = controller.get_actions(observations)
+        actions, _, _ = controller.get_actions(observations, deterministic=True)
         observations, _, terminations, truncations, _ = env.step(actions)
         
         # Log globals

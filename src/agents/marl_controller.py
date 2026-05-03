@@ -24,7 +24,7 @@ class MARLController:
             for agent in agent_names
         }
 
-    def get_actions(self, observations):
+    def get_actions(self, observations, deterministic=False):
         """
         Samples actions for all given agents based on their independent local observations.
         """
@@ -36,7 +36,7 @@ class MARLController:
             obs_tensor = torch.FloatTensor(obs).unsqueeze(0) # Batch dim
             
             # Use the local Actor-Critic network
-            action, logprob, entropy, value = self.policies[agent].get_action_and_value(obs_tensor)
+            action, logprob, entropy, value = self.policies[agent].get_action_and_value(obs_tensor, deterministic=deterministic)
             
             # Detach and store for gym interaction
             actions[agent] = action.detach().numpy()[0]
@@ -45,19 +45,25 @@ class MARLController:
             
         return actions, logprobs, values
 
-    def update(self, agent, rewards_list, logprobs_list, values_list, eps_clip=0.2, k_epochs=4):
+    def update(self, agent, states_list, actions_list, rewards_list, logprobs_list, values_list, eps_clip=0.2, k_epochs=4):
         """
         Perform Proximal Policy Optimization (PPO) update with Generalized Advantage Estimation (GAE).
         """
+        import numpy as np
         optimizer = self.optimizers[agent]
         policy = self.policies[agent]
         
         # Convert lists to tensors
+        states = torch.FloatTensor(np.array(states_list))
+        actions = torch.FloatTensor(np.array(actions_list))
         rewards = torch.tensor(rewards_list, dtype=torch.float32)
         old_logprobs = torch.stack(logprobs_list).detach()
         values = torch.cat(values_list).squeeze().detach()
         
-        # Calculate Generalized Advantage Estimation (GAE)
+        # Scale rewards to stabilize Critic network without destroying absolute magnitude
+        rewards = rewards * 1e-4
+        
+        # Calculate returns
         returns = []
         discounted_sum = 0
         for reward in reversed(rewards.tolist()):
@@ -66,30 +72,25 @@ class MARLController:
             
         returns = torch.tensor(returns, dtype=torch.float32)
         
-        # Normalize returns
-        returns = (returns - returns.mean()) / (returns.std() + 1e-7)
-        
         advantages = returns - values
+        
+        # Normalize advantages
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-7)
         
         # PPO Optimization over K epochs
         total_loss = 0
         for _ in range(k_epochs):
-            # Evaluate current policy
-            # Since actions were already sampled, we could re-evaluate from states.
-            # For this simplified skeletal version, we will approximate PPO update
-            # by using the old trajectory without full state re-sampling if we didn't save states.
-            # *In a full framework, you would save 'states' and re-run get_action_and_value.*
+            # Re-evaluate current policy to get gradients!
+            _, curr_logprobs, _, curr_values = policy.get_action_and_value(states, actions)
             
-            # Simplified surrogate loss using stored logprobs to demonstrate math
             # ratio = exp(log_prob_current - log_prob_old) 
-            # (Assuming 1 epoch perfectly aligns if we don't re-eval states, to show structure)
-            ratios = torch.exp(old_logprobs - old_logprobs) # Placeholder for actual re-evaluation ratio
+            ratios = torch.exp(curr_logprobs.squeeze() - old_logprobs.squeeze())
             
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1 - eps_clip, 1 + eps_clip) * advantages
             actor_loss = -torch.min(surr1, surr2).mean()
             
-            critic_loss = torch.nn.functional.mse_loss(returns, values)
+            critic_loss = torch.nn.functional.mse_loss(returns, curr_values.squeeze())
             
             loss = actor_loss + 0.5 * critic_loss
             

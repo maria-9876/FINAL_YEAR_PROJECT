@@ -50,7 +50,7 @@ class MultiAgentActorCritic(nn.Module):
         
         return action_mean, state_value
 
-    def get_action_and_value(self, state, action=None):
+    def get_action_and_value(self, state, action=None, deterministic=False):
         """
         Samples an action probabilistically during training.
         """
@@ -63,7 +63,10 @@ class MultiAgentActorCritic(nn.Module):
         dist = torch.distributions.MultivariateNormal(action_mean, cov_mat)
         
         if action is None:
-            action = dist.sample()
+            if deterministic:
+                action = action_mean
+            else:
+                action = dist.sample()
             
         # Clamp action to valid space [0, 1] bounds
         action = torch.clamp(action, 0.0, 1.0)
