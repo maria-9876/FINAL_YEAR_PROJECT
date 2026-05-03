@@ -89,6 +89,9 @@ class MARLController:
         advantages = q_tensor - baseline
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
+        # FIX: Align dimensions to prevent (N, 1) * (N,) -> (N, N) broadcasting corruption
+        advantages = advantages.unsqueeze(1)
+        
         # 2. PPO Epochs
         k_epochs = 4
         eps_clip = 0.2
@@ -139,7 +142,9 @@ class MARLController:
                     action_logprob, entropy, h_next = self.actor.evaluate_action(obs, action, h_states[agent])
                     actor_logprobs.append(action_logprob)
                     actor_entropies.append(entropy)
-                    h_states[agent] = h_next
+                    
+                    # FIX: Detach hidden state to prevent Exploding Gradients (TBPTT-1)
+                    h_states[agent] = h_next.detach()
                     
             # --- Backpropagate ---
             self.actor_optimizer.zero_grad()
