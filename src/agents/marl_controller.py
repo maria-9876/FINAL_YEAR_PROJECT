@@ -85,17 +85,17 @@ class MARLController:
                         next_obs = torch.FloatTensor(ep_states[agent][t+1]).unsqueeze(0)
                         other_next_obs = [torch.FloatTensor(ep_states[a][t+1]).unsqueeze(0) for a in agents if a != agent]
                         
-                        # Use target policy for SAC targets
-                        next_action, next_logprob, _ = self.actor.get_action(next_obs, h_states[agent])
+                        # ON-POLICY TARGET (SARSA): Use the action ACTUALLY taken at t+1
+                        next_action = torch.FloatTensor(ep_actions[agent][t+1]).unsqueeze(0)
                         
                         other_next_acts = []
                         for idx, a in enumerate(agents):
                             if a != agent:
-                                n_a, _, _ = self.actor.get_action(other_next_obs[len(other_next_acts)], h_states[a])
+                                n_a = torch.FloatTensor(ep_actions[a][t+1]).unsqueeze(0)
                                 other_next_acts.append(n_a)
                                 
                         target_q = self.target_critic(next_obs, next_action, other_next_obs, other_next_acts)
-                        y = reward + self.gamma * (target_q.squeeze() - self.alpha * next_logprob.squeeze())
+                        y = reward + self.gamma * target_q.squeeze()
                     else:
                         y = reward
                         
@@ -103,15 +103,22 @@ class MARLController:
                 (critic_loss / (seq_len * len(agents))).backward()
                 total_critic_loss += critic_loss.item()
                 
-                # --- Actor Loss ---
-                curr_act, curr_logprob, h_next = self.actor.get_action(obs, h_states[agent])
-                q_val = self.critic(obs, curr_act, other_obs, other_acts)
-                actor_loss = (self.alpha * curr_logprob - q_val).mean()
+                # --- Actor Loss (On-Policy Policy Gradient / Equation 4) ---
+                # Evaluate the action that was actually taken in the episode
+                action_logprob, entropy, h_next = self.actor.evaluate_action(obs, action, h_states[agent])
+                
+                # Policy Gradient: Maximize Expected Q, plus Entropy Bonus
+                q_val_detached = current_q.detach()
+                actor_loss = - (action_logprob * q_val_detached).mean() - (self.alpha * entropy).mean()
                 
                 (actor_loss / (seq_len * len(agents))).backward()
                 total_actor_loss += actor_loss.item()
                 
                 h_states[agent] = h_next.detach()
+                
+        # Gradient Clipping to prevent explosion
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
                 
         # Perform optimization once per episode
         self.critic_optimizer.step()

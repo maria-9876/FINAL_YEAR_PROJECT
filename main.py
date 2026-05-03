@@ -63,8 +63,7 @@ def train(num_episodes=10, max_steps=100):
         
         # Logging
         history['total_rewards'].append(episode_reward)
-        if (episode + 1) % 2 == 0:
-            print(f"Episode [{episode+1}/{num_episodes}] - Total Reward: {episode_reward:.2f}")
+        print(f"Episode [{episode+1}/{num_episodes}] - Total Reward: {episode_reward:.2f}")
             
     print("Training Completed.")
     return controller, history

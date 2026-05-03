@@ -115,3 +115,15 @@ class RecurrentActor(nn.Module):
         action_logprob = dist.log_prob(action)
         
         return action, action_logprob, h_next
+        
+    def evaluate_action(self, obs, action, hidden_state=None):
+        action_mean, h_next = self.forward(obs, hidden_state)
+        
+        cov_var = torch.full(size=(action_mean.shape[-1],), fill_value=0.1, device=obs.device)
+        cov_mat = torch.diag(cov_var)
+        
+        dist = torch.distributions.MultivariateNormal(action_mean, cov_mat)
+        action_logprob = dist.log_prob(action)
+        entropy = dist.entropy()
+        
+        return action_logprob, entropy, h_next
