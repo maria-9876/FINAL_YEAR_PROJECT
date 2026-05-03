@@ -80,6 +80,9 @@ class RecurrentActor(nn.Module):
         self.fc1 = nn.Linear(hidden_dim, hidden_dim)
         self.action_out = nn.Linear(hidden_dim, action_dim)
         
+        # Make the action variance a learnable parameter so the AI can become 'confident'
+        self.action_logstd = nn.Parameter(torch.zeros(action_dim))
+        
     def forward(self, obs, hidden_state=None):
         """
         obs: (batch, state_dim)
@@ -100,9 +103,14 @@ class RecurrentActor(nn.Module):
     def get_action(self, obs, hidden_state=None, deterministic=False):
         action_mean, h_next = self.forward(obs, hidden_state)
         
-        cov_var = torch.full(size=(action_mean.shape[-1],), fill_value=0.1, device=obs.device)
-        cov_mat = torch.diag(cov_var)
-        
+        # Use learnable variance
+        cov_var = self.action_logstd.exp().pow(2)
+        # Handle batch dimension if necessary
+        if len(action_mean.shape) > 1:
+             cov_mat = torch.diag(cov_var).unsqueeze(0).expand(action_mean.shape[0], -1, -1)
+        else:
+             cov_mat = torch.diag(cov_var)
+             
         dist = torch.distributions.MultivariateNormal(action_mean, cov_mat)
         
         if deterministic:
@@ -119,8 +127,11 @@ class RecurrentActor(nn.Module):
     def evaluate_action(self, obs, action, hidden_state=None):
         action_mean, h_next = self.forward(obs, hidden_state)
         
-        cov_var = torch.full(size=(action_mean.shape[-1],), fill_value=0.1, device=obs.device)
-        cov_mat = torch.diag(cov_var)
+        cov_var = self.action_logstd.exp().pow(2)
+        if len(action_mean.shape) > 1:
+             cov_mat = torch.diag(cov_var).unsqueeze(0).expand(action_mean.shape[0], -1, -1)
+        else:
+             cov_mat = torch.diag(cov_var)
         
         dist = torch.distributions.MultivariateNormal(action_mean, cov_mat)
         action_logprob = dist.log_prob(action)
