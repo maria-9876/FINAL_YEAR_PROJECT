@@ -57,9 +57,10 @@ class MARLController:
         for a in agents:
             scaled_rewards[a] = np.array(ep_rewards[a]) * 1e-4
             
-        # 1. First Pass: Collect Old Logprobs and Q-values for Advantages
+        # 1. First Pass: Collect Old Logprobs, Q-values, and Baseline Q-values
         old_logprobs = []
         q_values = []
+        baseline_q_values = []
         h_states = {a: None for a in agents}
         
         with torch.no_grad():
@@ -77,16 +78,20 @@ class MARLController:
                     current_q = self.critic(obs, action, other_obs, other_acts)
                     q_values.append(current_q.squeeze())
                     
-                    action_logprob, _, h_next = self.actor.evaluate_action(obs, action, h_states[agent])
+                    action_logprob, _, h_next, action_mean = self.actor.evaluate_action(obs, action, h_states[agent])
                     old_logprobs.append(action_logprob)
                     h_states[agent] = h_next
                     
+                    # Compute state-dependent baseline V(s) ≈ Q(s, action_mean)
+                    baseline_q = self.critic(obs, action_mean, other_obs, other_acts)
+                    baseline_q_values.append(baseline_q.squeeze())
+                    
         old_logprobs_tensor = torch.stack(old_logprobs).detach()
         q_tensor = torch.stack(q_values).detach()
+        baseline_tensor = torch.stack(baseline_q_values).detach()
         
-        # Baseline = mean Q value. Advantage = Q - Baseline
-        baseline = q_tensor.mean()
-        advantages = q_tensor - baseline
+        # Advantage = Q(s, a) - V(s)
+        advantages = q_tensor - baseline_tensor
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
         # FIX: Align dimensions to prevent (N, 1) * (N,) -> (N, N) broadcasting corruption
@@ -139,7 +144,7 @@ class MARLController:
                     critic_losses.append(critic_loss)
                     
                     # --- Actor ---
-                    action_logprob, entropy, h_next = self.actor.evaluate_action(obs, action, h_states[agent])
+                    action_logprob, entropy, h_next, _ = self.actor.evaluate_action(obs, action, h_states[agent])
                     actor_logprobs.append(action_logprob)
                     actor_entropies.append(entropy)
                     

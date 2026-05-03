@@ -137,4 +137,4 @@ class RecurrentActor(nn.Module):
         action_logprob = dist.log_prob(action)
         entropy = dist.entropy()
         
-        return action_logprob, entropy, h_next
+        return action_logprob, entropy, h_next, action_mean
