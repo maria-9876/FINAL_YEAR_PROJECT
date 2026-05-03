@@ -129,7 +129,7 @@ class KeralaCovidEnv(ParallelEnv):
             hospital_overflow = max(0, new_epi_state['I'] * 0.10 - action_modifiers['icu_capacity'])
             
             # Penalize: infections, hospital overflow, and economic drop
-            rewards[agent] = - (new_infections * 0.01) - (hospital_overflow * 1.0) - ((1.0 - new_economic_health) * 100)
+            rewards[agent] = - (new_infections * 0.01) - (hospital_overflow * 1.0) - ((1.0 - new_economic_health) * 5000)
 
         # Truncate if max steps reached
         if self.current_step >= self.max_steps:
