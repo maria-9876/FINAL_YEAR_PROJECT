@@ -1,103 +1,129 @@
 import torch
-from pettingzoo.utils import agent_selector
-from .actor_critic import MultiAgentActorCritic
+import torch.nn as nn
+import numpy as np
+from src.agents.actor_critic import RecurrentActor, AttentionCritic
 
 class MARLController:
     """
-    Wrapper controller managing the multiple Actor-Critic agents 
-    interacting with the PettingZoo Environment.
+    Implements the Multi-Agent Recurrent Attention Actor-Critic (MARAAC) from the paper.
+    Uses Parameter Sharing, GRU Actors, and an Attention Critic.
     """
-    def __init__(self, agent_names, state_dim, action_dim, lr=3e-4, gamma=0.99):
+    def __init__(self, agent_names, state_dim, action_dim, lr=3e-4, gamma=0.99, alpha=0.01):
         self.agent_names = agent_names
         self.gamma = gamma
+        self.alpha = alpha # Temperature parameter for entropy
         
-        # Instantiate separate networks for each district agent 
-        # (Though sharing weights is an option, distinct nets allow district specialization)
-        self.policies = {
-            agent: MultiAgentActorCritic(state_dim, action_dim) 
-            for agent in agent_names
-        }
+        # Shared Actor and Critic for all districts
+        self.actor = RecurrentActor(state_dim, action_dim)
+        self.critic = AttentionCritic(state_dim, action_dim)
         
-        # Optimizers per agent
-        self.optimizers = {
-            agent: torch.optim.Adam(self.policies[agent].parameters(), lr=lr)
-            for agent in agent_names
-        }
+        # Target Critic for stable Q-learning
+        self.target_critic = AttentionCritic(state_dim, action_dim)
+        self.target_critic.load_state_dict(self.critic.state_dict())
+        
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
 
-    def get_actions(self, observations, deterministic=False):
-        """
-        Samples actions for all given agents based on their independent local observations.
-        """
+
+    def get_actions(self, observations, hidden_states, deterministic=False):
         actions = {}
-        logprobs = {}
-        values = {}
+        next_hidden_states = {}
         
         for agent, obs in observations.items():
-            obs_tensor = torch.FloatTensor(obs).unsqueeze(0) # Batch dim
+            obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
             
-            # Use the local Actor-Critic network
-            action, logprob, entropy, value = self.policies[agent].get_action_and_value(obs_tensor, deterministic=deterministic)
+            h_tensor = hidden_states.get(agent, None)
+            if h_tensor is not None:
+                h_tensor = torch.FloatTensor(h_tensor).unsqueeze(0)
+                
+            action, _, h_next = self.actor.get_action(obs_tensor, h_tensor, deterministic=deterministic)
             
-            # Detach and store for gym interaction
             actions[agent] = action.detach().numpy()[0]
-            logprobs[agent] = logprob
-            values[agent] = value
+            next_hidden_states[agent] = h_next.detach().numpy()[0]
             
-        return actions, logprobs, values
+        return actions, next_hidden_states
 
-    def update(self, agent, states_list, actions_list, rewards_list, logprobs_list, values_list, eps_clip=0.2, k_epochs=4):
+
+    def update_all(self, ep_states, ep_actions, ep_rewards):
         """
-        Perform Proximal Policy Optimization (PPO) update with Generalized Advantage Estimation (GAE).
+        Updates the MARAAC network using the stored episode trajectories of all agents.
+        Satisfies Equation 4 and Equation 8 from the paper.
         """
-        import numpy as np
-        optimizer = self.optimizers[agent]
-        policy = self.policies[agent]
+
+        agents = list(ep_states.keys())
+        seq_len = len(ep_states[agents[0]])
         
-        # Convert lists to tensors
-        states = torch.FloatTensor(np.array(states_list))
-        actions = torch.FloatTensor(np.array(actions_list))
-        rewards = torch.tensor(rewards_list, dtype=torch.float32)
-        old_logprobs = torch.stack(logprobs_list).detach()
-        values = torch.cat(values_list).squeeze().detach()
-        
-        # Scale rewards to stabilize Critic network without destroying absolute magnitude
-        rewards = rewards * 1e-4
-        
-        # Calculate returns
-        returns = []
-        discounted_sum = 0
-        for reward in reversed(rewards.tolist()):
-            discounted_sum = reward + (self.gamma * discounted_sum)
-            returns.insert(0, discounted_sum)
-            
-        returns = torch.tensor(returns, dtype=torch.float32)
-        
-        advantages = returns - values
-        
-        # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-7)
-        
-        # PPO Optimization over K epochs
         total_loss = 0
-        for _ in range(k_epochs):
-            # Re-evaluate current policy to get gradients!
-            _, curr_logprobs, _, curr_values = policy.get_action_and_value(states, actions)
+        
+        # Scale rewards to prevent network gradient explosion
+        for a in agents:
+            r = np.array(ep_rewards[a])
+            r = r * 1e-4
+            ep_rewards[a] = r.tolist()
             
-            # ratio = exp(log_prob_current - log_prob_old) 
-            ratios = torch.exp(curr_logprobs.squeeze() - old_logprobs.squeeze())
+        # Initialize hidden states for training
+        h_states = {a: None for a in agents}
             
-            surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1 - eps_clip, 1 + eps_clip) * advantages
-            actor_loss = -torch.min(surr1, surr2).mean()
+        # Process the trajectory sequentially to preserve GRU time-series dependencies
+        for t in range(seq_len):
+            # 1. Gather current step data across all agents
+            obs_dict = {a: torch.FloatTensor(ep_states[a][t]).unsqueeze(0) for a in agents}
+            act_dict = {a: torch.FloatTensor(ep_actions[a][t]).unsqueeze(0) for a in agents}
+            reward_dict = {a: torch.tensor([ep_rewards[a][t]], dtype=torch.float32) for a in agents}
             
-            critic_loss = torch.nn.functional.mse_loss(returns, curr_values.squeeze())
+            for agent in agents:
+                obs = obs_dict[agent]
+                action = act_dict[agent]
+                reward = reward_dict[agent]
+                
+                other_obs = [obs_dict[a] for a in agents if a != agent]
+                other_acts = [act_dict[a] for a in agents if a != agent]
+                
+                # --- Critic Loss (Equation 8) ---
+                current_q = self.critic(obs, action, other_obs, other_acts)
+                
+                with torch.no_grad():
+                    if t < seq_len - 1:
+                        next_obs = torch.FloatTensor(ep_states[agent][t+1]).unsqueeze(0)
+                        other_next_obs = [torch.FloatTensor(ep_states[a][t+1]).unsqueeze(0) for a in agents if a != agent]
+                        
+                        # Get next actions and logprobs from actor
+                        next_action, next_logprob, _ = self.actor.get_action(next_obs, h_states[agent])
+                        
+                        other_next_acts = []
+                        for a in agents:
+                            if a != agent:
+                                n_a, _, _ = self.actor.get_action(other_next_obs[len(other_next_acts)], h_states[a])
+                                other_next_acts.append(n_a)
+                                
+                        target_q = self.target_critic(next_obs, next_action, other_next_obs, other_next_acts)
+                        y = reward.squeeze() + self.gamma * (target_q.squeeze() - self.alpha * next_logprob.squeeze())
+                    else:
+                        y = reward.squeeze()
+                        
+                critic_loss = nn.functional.mse_loss(current_q.squeeze(), y.squeeze())
+                
+                self.critic_optimizer.zero_grad()
+                critic_loss.backward()
+                self.critic_optimizer.step()
+                
+                # --- Actor Loss (Equation 4 / Soft Actor-Critic PG) ---
+                curr_act, curr_logprob, h_next = self.actor.get_action(obs, h_states[agent])
+                
+                q_val = self.critic(obs, curr_act, other_obs, other_acts)
+                # Minimize: alpha * log(pi) - Q(o,a)
+                actor_loss = (self.alpha * curr_logprob - q_val).mean()
+                
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                self.actor_optimizer.step()
+                
+                h_states[agent] = h_next.detach()
+                total_loss += (actor_loss.item() + critic_loss.item())
+                
+        # Soft update target network (Polyak averaging)
+        tau = 0.005
+        for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
+            target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
             
-            loss = actor_loss + 0.5 * critic_loss
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
-            
-        return total_loss / k_epochs
+        return total_loss / (seq_len * len(agents))

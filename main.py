@@ -34,12 +34,13 @@ def train(num_episodes=10, max_steps=100):
         ep_states = {agent: [] for agent in env.possible_agents}
         ep_actions = {agent: [] for agent in env.possible_agents}
         ep_rewards = {agent: [] for agent in env.possible_agents}
-        ep_logprobs = {agent: [] for agent in env.possible_agents}
-        ep_values = {agent: [] for agent in env.possible_agents}
+        
+        # Initialize GRU hidden states for this episode
+        hidden_states = {agent: None for agent in env.possible_agents}
         
         for step in range(max_steps):
             # 1. Get continuous actions from Policy Networks
-            actions, logprobs, values = controller.get_actions(observations)
+            actions, hidden_states = controller.get_actions(observations, hidden_states)
             
             # 2. Step Environment
             next_obs, rewards, terminations, truncations, infos = env.step(actions)
@@ -49,8 +50,7 @@ def train(num_episodes=10, max_steps=100):
                 ep_states[agent].append(observations[agent])
                 ep_actions[agent].append(actions[agent])
                 ep_rewards[agent].append(rewards[agent])
-                ep_logprobs[agent].append(logprobs[agent])
-                ep_values[agent].append(values[agent])
+                # logprobs and values are computed internally by MARAAC update
                 episode_reward += rewards[agent]
                 
             observations = next_obs
@@ -58,17 +58,8 @@ def train(num_episodes=10, max_steps=100):
             if all(terminations.values()) or all(truncations.values()):
                 break
                 
-        # End of episode policy update
-        for agent in env.possible_agents:
-            # Perform PPO updates over the stored trajectory memory
-            controller.update(
-                agent=agent,
-                states_list=ep_states[agent],
-                actions_list=ep_actions[agent],
-                rewards_list=ep_rewards[agent],
-                logprobs_list=ep_logprobs[agent],
-                values_list=ep_values[agent]
-            )
+        # End of episode policy update (MARAAC Soft Actor-Critic update)
+        controller.update_all(ep_states, ep_actions, ep_rewards)
         
         # Logging
         history['total_rewards'].append(episode_reward)
@@ -93,9 +84,11 @@ def evaluate(controller, max_steps=100):
     lockdown_levels = {agent: [] for agent in env.agents}
     district_data = {agent: [] for agent in env.agents}
     
+    hidden_states = {agent: None for agent in env.agents}
     for step in range(max_steps):
         # Deterministic actions (no sampling noise)
-        actions, _, _ = controller.get_actions(observations, deterministic=True)
+
+        actions, hidden_states = controller.get_actions(observations, hidden_states, deterministic=True)
         observations, _, terminations, truncations, _ = env.step(actions)
         
         # Log globals
