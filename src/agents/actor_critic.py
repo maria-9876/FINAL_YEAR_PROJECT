@@ -108,7 +108,8 @@ class RecurrentActor(nn.Module):
         if deterministic:
             action = action_mean
         else:
-            action = dist.sample()
+            # Use rsample() for the reparameterization trick (crucial for SAC/MARAAC gradient flow)
+            action = dist.rsample()
             
         action = torch.clamp(action, 0.0, 1.0)
         action_logprob = dist.log_prob(action)

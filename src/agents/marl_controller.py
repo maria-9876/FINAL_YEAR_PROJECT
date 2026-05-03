@@ -47,39 +47,37 @@ class MARLController:
     def update_all(self, ep_states, ep_actions, ep_rewards):
         """
         Updates the MARAAC network using the stored episode trajectories of all agents.
-        Satisfies Equation 4 and Equation 8 from the paper.
         """
-
         agents = list(ep_states.keys())
         seq_len = len(ep_states[agents[0]])
         
-        total_loss = 0
-        
-        # Scale rewards to prevent network gradient explosion
+        # Scale rewards
+        scaled_rewards = {}
         for a in agents:
-            r = np.array(ep_rewards[a])
-            r = r * 1e-4
-            ep_rewards[a] = r.tolist()
+            scaled_rewards[a] = np.array(ep_rewards[a]) * 1e-4
             
-        # Initialize hidden states for training
         h_states = {a: None for a in agents}
-            
-        # Process the trajectory sequentially to preserve GRU time-series dependencies
+        total_actor_loss = 0
+        total_critic_loss = 0
+        
+        # Accumulate losses over the episode
+        self.actor_optimizer.zero_grad()
+        self.critic_optimizer.zero_grad()
+        
         for t in range(seq_len):
-            # 1. Gather current step data across all agents
+            # Gather current step data across all agents
             obs_dict = {a: torch.FloatTensor(ep_states[a][t]).unsqueeze(0) for a in agents}
             act_dict = {a: torch.FloatTensor(ep_actions[a][t]).unsqueeze(0) for a in agents}
-            reward_dict = {a: torch.tensor([ep_rewards[a][t]], dtype=torch.float32) for a in agents}
             
             for agent in agents:
                 obs = obs_dict[agent]
                 action = act_dict[agent]
-                reward = reward_dict[agent]
+                reward = torch.tensor([scaled_rewards[agent][t]], dtype=torch.float32)
                 
                 other_obs = [obs_dict[a] for a in agents if a != agent]
                 other_acts = [act_dict[a] for a in agents if a != agent]
                 
-                # --- Critic Loss (Equation 8) ---
+                # --- Critic Loss ---
                 current_q = self.critic(obs, action, other_obs, other_acts)
                 
                 with torch.no_grad():
@@ -87,43 +85,41 @@ class MARLController:
                         next_obs = torch.FloatTensor(ep_states[agent][t+1]).unsqueeze(0)
                         other_next_obs = [torch.FloatTensor(ep_states[a][t+1]).unsqueeze(0) for a in agents if a != agent]
                         
-                        # Get next actions and logprobs from actor
+                        # Use target policy for SAC targets
                         next_action, next_logprob, _ = self.actor.get_action(next_obs, h_states[agent])
                         
                         other_next_acts = []
-                        for a in agents:
+                        for idx, a in enumerate(agents):
                             if a != agent:
                                 n_a, _, _ = self.actor.get_action(other_next_obs[len(other_next_acts)], h_states[a])
                                 other_next_acts.append(n_a)
                                 
                         target_q = self.target_critic(next_obs, next_action, other_next_obs, other_next_acts)
-                        y = reward.squeeze() + self.gamma * (target_q.squeeze() - self.alpha * next_logprob.squeeze())
+                        y = reward + self.gamma * (target_q.squeeze() - self.alpha * next_logprob.squeeze())
                     else:
-                        y = reward.squeeze()
+                        y = reward
                         
                 critic_loss = nn.functional.mse_loss(current_q.squeeze(), y.squeeze())
+                (critic_loss / (seq_len * len(agents))).backward()
+                total_critic_loss += critic_loss.item()
                 
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                self.critic_optimizer.step()
-                
-                # --- Actor Loss (Equation 4 / Soft Actor-Critic PG) ---
+                # --- Actor Loss ---
                 curr_act, curr_logprob, h_next = self.actor.get_action(obs, h_states[agent])
-                
                 q_val = self.critic(obs, curr_act, other_obs, other_acts)
-                # Minimize: alpha * log(pi) - Q(o,a)
                 actor_loss = (self.alpha * curr_logprob - q_val).mean()
                 
-                self.actor_optimizer.zero_grad()
-                actor_loss.backward()
-                self.actor_optimizer.step()
+                (actor_loss / (seq_len * len(agents))).backward()
+                total_actor_loss += actor_loss.item()
                 
                 h_states[agent] = h_next.detach()
-                total_loss += (actor_loss.item() + critic_loss.item())
                 
-        # Soft update target network (Polyak averaging)
+        # Perform optimization once per episode
+        self.critic_optimizer.step()
+        self.actor_optimizer.step()
+        
+        # Soft update target network
         tau = 0.005
         for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
             target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
             
-        return total_loss / (seq_len * len(agents))
+        return total_actor_loss / (seq_len * len(agents))
