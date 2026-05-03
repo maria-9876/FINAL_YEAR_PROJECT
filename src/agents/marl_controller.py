@@ -64,6 +64,11 @@ class MARLController:
         self.actor_optimizer.zero_grad()
         self.critic_optimizer.zero_grad()
         
+        critic_losses = []
+        actor_logprobs = []
+        actor_entropies = []
+        q_values = []
+        
         for t in range(seq_len):
             # Gather current step data across all agents
             obs_dict = {a: torch.FloatTensor(ep_states[a][t]).unsqueeze(0) for a in agents}
@@ -77,7 +82,7 @@ class MARLController:
                 other_obs = [obs_dict[a] for a in agents if a != agent]
                 other_acts = [act_dict[a] for a in agents if a != agent]
                 
-                # --- Critic Loss ---
+                # --- Critic ---
                 current_q = self.critic(obs, action, other_obs, other_acts)
                 
                 with torch.no_grad():
@@ -100,28 +105,40 @@ class MARLController:
                         y = reward
                         
                 critic_loss = nn.functional.mse_loss(current_q.squeeze(), y.squeeze())
-                (critic_loss / (seq_len * len(agents))).backward()
-                total_critic_loss += critic_loss.item()
+                critic_losses.append(critic_loss)
                 
-                # --- Actor Loss (On-Policy Policy Gradient / Equation 4) ---
-                # Evaluate the action that was actually taken in the episode
+                # --- Actor ---
                 action_logprob, entropy, h_next = self.actor.evaluate_action(obs, action, h_states[agent])
                 
-                # Policy Gradient: Maximize Expected Q, plus Entropy Bonus
-                q_val_detached = current_q.detach()
-                actor_loss = - (action_logprob * q_val_detached).mean() - (self.alpha * entropy).mean()
-                
-                (actor_loss / (seq_len * len(agents))).backward()
-                total_actor_loss += actor_loss.item()
+                actor_logprobs.append(action_logprob)
+                actor_entropies.append(entropy)
+                q_values.append(current_q.detach().squeeze())
                 
                 h_states[agent] = h_next.detach()
                 
-        # Gradient Clipping to prevent explosion
+        # --- Final Updates ---
+        
+        # 1. Backpropagate Critic
+        total_critic_loss = torch.stack(critic_losses).mean()
+        total_critic_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
-                
-        # Perform optimization once per episode
         self.critic_optimizer.step()
+        
+        # 2. Backpropagate Actor with Advantage Baseline
+        q_tensor = torch.stack(q_values)
+        logprobs_tensor = torch.stack(actor_logprobs)
+        entropies_tensor = torch.stack(actor_entropies)
+        
+        # Baseline = mean Q value. Advantage = Q - Baseline
+        baseline = q_tensor.mean()
+        advantages = q_tensor - baseline
+        
+        # Normalize advantages for extra stability
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        
+        actor_loss = - (logprobs_tensor * advantages).mean() - (self.alpha * entropies_tensor).mean()
+        actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
         self.actor_optimizer.step()
         
         # Soft update target network
