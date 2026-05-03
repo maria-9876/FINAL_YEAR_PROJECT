@@ -124,12 +124,12 @@ class KeralaCovidEnv(ParallelEnv):
             
             observations[agent] = self._get_obs(agent)
             
-            # Formulate reward (Placeholder logic, will be expanded in utils/reward_functions.py)
-            new_infections = new_epi_state['E'] # Approximation
+            # Calculate new daily infections (drop in Susceptible population)
+            new_infections = max(0, self.state[agent]['S'] - new_epi_state['S'])
             hospital_overflow = max(0, new_epi_state['I'] * 0.10 - action_modifiers['icu_capacity'])
             
-            # Penalize: infections, hospital overflow, and economic drop
-            rewards[agent] = - (new_infections * 0.01) - (hospital_overflow * 1.0) - ((1.0 - new_economic_health) * 5000)
+            # Penalize: daily new infections, hospital overflow, and economic drop
+            rewards[agent] = - (new_infections * 1.0) - (hospital_overflow * 1.0) - ((1.0 - new_economic_health) * 5000)
 
         # Truncate if max steps reached
         if self.current_step >= self.max_steps:
