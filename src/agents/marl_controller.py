@@ -46,7 +46,8 @@ class MARLController:
 
     def update_all(self, ep_states, ep_actions, ep_rewards):
         """
-        Updates the MARAAC network using the stored episode trajectories of all agents.
+        Updates the MARAAC network using Proximal Policy Optimization (PPO) epochs.
+        This drastically speeds up learning from small episode counts.
         """
         agents = list(ep_states.keys())
         seq_len = len(ep_states[agents[0]])
@@ -56,94 +57,118 @@ class MARLController:
         for a in agents:
             scaled_rewards[a] = np.array(ep_rewards[a]) * 1e-4
             
-        h_states = {a: None for a in agents}
-        total_actor_loss = 0
-        total_critic_loss = 0
-        
-        # Accumulate losses over the episode
-        self.actor_optimizer.zero_grad()
-        self.critic_optimizer.zero_grad()
-        
-        critic_losses = []
-        actor_logprobs = []
-        actor_entropies = []
+        # 1. First Pass: Collect Old Logprobs and Q-values for Advantages
+        old_logprobs = []
         q_values = []
+        h_states = {a: None for a in agents}
         
-        for t in range(seq_len):
-            # Gather current step data across all agents
-            obs_dict = {a: torch.FloatTensor(ep_states[a][t]).unsqueeze(0) for a in agents}
-            act_dict = {a: torch.FloatTensor(ep_actions[a][t]).unsqueeze(0) for a in agents}
-            
-            for agent in agents:
-                obs = obs_dict[agent]
-                action = act_dict[agent]
-                reward = torch.tensor([scaled_rewards[agent][t]], dtype=torch.float32)
+        with torch.no_grad():
+            for t in range(seq_len):
+                obs_dict = {a: torch.FloatTensor(ep_states[a][t]).unsqueeze(0) for a in agents}
+                act_dict = {a: torch.FloatTensor(ep_actions[a][t]).unsqueeze(0) for a in agents}
                 
-                other_obs = [obs_dict[a] for a in agents if a != agent]
-                other_acts = [act_dict[a] for a in agents if a != agent]
-                
-                # --- Critic ---
-                current_q = self.critic(obs, action, other_obs, other_acts)
-                
-                with torch.no_grad():
-                    if t < seq_len - 1:
-                        next_obs = torch.FloatTensor(ep_states[agent][t+1]).unsqueeze(0)
-                        other_next_obs = [torch.FloatTensor(ep_states[a][t+1]).unsqueeze(0) for a in agents if a != agent]
-                        
-                        # ON-POLICY TARGET (SARSA): Use the action ACTUALLY taken at t+1
-                        next_action = torch.FloatTensor(ep_actions[agent][t+1]).unsqueeze(0)
-                        
-                        other_next_acts = []
-                        for idx, a in enumerate(agents):
-                            if a != agent:
-                                n_a = torch.FloatTensor(ep_actions[a][t+1]).unsqueeze(0)
-                                other_next_acts.append(n_a)
-                                
-                        target_q = self.target_critic(next_obs, next_action, other_next_obs, other_next_acts)
-                        y = reward + self.gamma * target_q.squeeze()
-                    else:
-                        y = reward
-                        
-                critic_loss = nn.functional.mse_loss(current_q.squeeze(), y.squeeze())
-                critic_losses.append(critic_loss)
-                
-                # --- Actor ---
-                action_logprob, entropy, h_next = self.actor.evaluate_action(obs, action, h_states[agent])
-                
-                actor_logprobs.append(action_logprob)
-                actor_entropies.append(entropy)
-                q_values.append(current_q.detach().squeeze())
-                
-                h_states[agent] = h_next.detach()
-                
-        # --- Final Updates ---
-        
-        # 1. Backpropagate Critic
-        total_critic_loss = torch.stack(critic_losses).mean()
-        total_critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
-        self.critic_optimizer.step()
-        
-        # 2. Backpropagate Actor with Advantage Baseline
-        q_tensor = torch.stack(q_values)
-        logprobs_tensor = torch.stack(actor_logprobs)
-        entropies_tensor = torch.stack(actor_entropies)
+                for agent in agents:
+                    obs = obs_dict[agent]
+                    action = act_dict[agent]
+                    
+                    other_obs = [obs_dict[a] for a in agents if a != agent]
+                    other_acts = [act_dict[a] for a in agents if a != agent]
+                    
+                    current_q = self.critic(obs, action, other_obs, other_acts)
+                    q_values.append(current_q.squeeze())
+                    
+                    action_logprob, _, h_next = self.actor.evaluate_action(obs, action, h_states[agent])
+                    old_logprobs.append(action_logprob)
+                    h_states[agent] = h_next
+                    
+        old_logprobs_tensor = torch.stack(old_logprobs).detach()
+        q_tensor = torch.stack(q_values).detach()
         
         # Baseline = mean Q value. Advantage = Q - Baseline
         baseline = q_tensor.mean()
         advantages = q_tensor - baseline
-        
-        # Normalize advantages for extra stability
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
-        actor_loss = - (logprobs_tensor * advantages).mean() - (self.alpha * entropies_tensor).mean()
-        actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
-        self.actor_optimizer.step()
+        # 2. PPO Epochs
+        k_epochs = 4
+        eps_clip = 0.2
         
+        for epoch in range(k_epochs):
+            critic_losses = []
+            actor_logprobs = []
+            actor_entropies = []
+            h_states = {a: None for a in agents}
+            
+            for t in range(seq_len):
+                obs_dict = {a: torch.FloatTensor(ep_states[a][t]).unsqueeze(0) for a in agents}
+                act_dict = {a: torch.FloatTensor(ep_actions[a][t]).unsqueeze(0) for a in agents}
+                
+                for agent in agents:
+                    obs = obs_dict[agent]
+                    action = act_dict[agent]
+                    reward = torch.tensor([scaled_rewards[agent][t]], dtype=torch.float32)
+                    
+                    other_obs = [obs_dict[a] for a in agents if a != agent]
+                    other_acts = [act_dict[a] for a in agents if a != agent]
+                    
+                    # --- Critic ---
+                    current_q = self.critic(obs, action, other_obs, other_acts)
+                    
+                    with torch.no_grad():
+                        if t < seq_len - 1:
+                            next_obs = torch.FloatTensor(ep_states[agent][t+1]).unsqueeze(0)
+                            other_next_obs = [torch.FloatTensor(ep_states[a][t+1]).unsqueeze(0) for a in agents if a != agent]
+                            
+                            next_action = torch.FloatTensor(ep_actions[agent][t+1]).unsqueeze(0)
+                            
+                            other_next_acts = []
+                            for idx, a in enumerate(agents):
+                                if a != agent:
+                                    n_a = torch.FloatTensor(ep_actions[a][t+1]).unsqueeze(0)
+                                    other_next_acts.append(n_a)
+                                    
+                            target_q = self.target_critic(next_obs, next_action, other_next_obs, other_next_acts)
+                            y = reward + self.gamma * target_q.squeeze()
+                        else:
+                            y = reward
+                            
+                    critic_loss = nn.functional.mse_loss(current_q.squeeze(), y.squeeze())
+                    critic_losses.append(critic_loss)
+                    
+                    # --- Actor ---
+                    action_logprob, entropy, h_next = self.actor.evaluate_action(obs, action, h_states[agent])
+                    actor_logprobs.append(action_logprob)
+                    actor_entropies.append(entropy)
+                    h_states[agent] = h_next
+                    
+            # --- Backpropagate ---
+            self.actor_optimizer.zero_grad()
+            self.critic_optimizer.zero_grad()
+            
+            # Critic Loss
+            total_critic_loss = torch.stack(critic_losses).mean()
+            total_critic_loss.backward()
+            
+            # Actor Loss (PPO Clipped Surrogate)
+            new_logprobs_tensor = torch.stack(actor_logprobs)
+            entropies_tensor = torch.stack(actor_entropies)
+            
+            ratios = torch.exp(new_logprobs_tensor - old_logprobs_tensor)
+            surr1 = ratios * advantages
+            surr2 = torch.clamp(ratios, 1.0 - eps_clip, 1.0 + eps_clip) * advantages
+            
+            actor_loss = -torch.min(surr1, surr2).mean() - (self.alpha * entropies_tensor).mean()
+            actor_loss.backward()
+            
+            # Gradient Clipping & Step
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+            self.critic_optimizer.step()
+            self.actor_optimizer.step()
+            
         # Soft update target network
         tau = 0.005
         for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
             target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
             
-        return total_actor_loss / (seq_len * len(agents))
+        return actor_loss.item()

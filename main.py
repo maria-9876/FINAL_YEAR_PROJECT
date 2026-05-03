@@ -134,15 +134,15 @@ def evaluate(controller, max_steps=100):
     plt.xlabel('Days (Steps)')
     
     plt.subplot(2, 2, 4)
-    # Plot lockdown levels for a few sample districts to keep it readable
-    sample_agents = env.possible_agents[:3]
-    for agent in sample_agents:
+    # Plot lockdown levels for all districts
+    for agent in env.possible_agents:
         plt.plot(lockdown_levels[agent], label=agent, alpha=0.7)
     plt.title('Agent Policy: Lockdown Levels Chosen')
     plt.xlabel('Days (Steps)')
     plt.ylabel('Lockdown Strictness (0-3)')
     plt.yticks([0, 1, 2, 3])
-    plt.legend()
+    # Put legend outside if there are too many agents
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize='small')
     
     plt.tight_layout()
     plt.savefig('evaluation_results.png')
